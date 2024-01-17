@@ -51,21 +51,30 @@ let parse_until_bis stop clist =
 
 let parse_tagname clist = parse_until_bis [' '; '>'] clist
 
-let parse_key clist = parse_until ['='] clist
+let parse_key clist = parse_until_bis ['='] clist
 
-let parse_value clist = parse_until [' '; '>'] clist
+let parse_value clist = parse_until ['"'] clist
 
-let parse_attributes clist =
-  let rec aux res = function
-    | '>' :: t    -> (res, t)
-    | ' ' :: t    -> aux res t
+let rec attributes_exists = function
+  | '>' :: _ -> false
+  | '=' :: _ -> true
+  | _ :: t -> attributes_exists t
+  | [] -> false
+
+let parse_attributes cl =
+  let rec aux res clist =
+    match clist with
+    | '>' :: t -> res, t
+    | ' ' :: t -> aux res t
     | c :: t as l ->
-        let key, rest   = parse_key l in
-        let value, rest = parse_value rest in
-        aux (StrMap.add key value res) rest
+        if not (attributes_exists l) then res, t
+        else
+          let key, rest   = parse_key l in
+          let value, rest = parse_value (List.tl rest) in
+          aux (StrMap.add key value res) (List.tl rest)
     | [] -> failwith "parse_attributes"
   in
-  aux StrMap.empty clist
+  aux StrMap.empty cl
 
 let handle_attributes = function
   | '>' :: t -> (None, t)
