@@ -1,23 +1,6 @@
-let rec get_lines file =
-  try
-    let line = input_line file in
-    line :: get_lines file
-  with _ -> []
-
-let string_to_charlist str =
-  let rec aux i = try String.get str i :: aux (i + 1) with _ -> [] in
-  aux 0
-
-let rec lines_to_charlist = function
-  | []     -> []
-  | l :: t -> string_to_charlist l @ lines_to_charlist t
-
-let open_xml filename =
-  let file  = open_in filename in
-  let lines = get_lines file in
-  lines_to_charlist lines
-
 module StrMap = Map.Make (String)
+
+open Printf
 
 type xml_tag =
   | OpeningTag of {
@@ -28,92 +11,87 @@ type xml_tag =
     }
   | ClosingTag of { tagname : string; level : int }
 
-let rec str_of_clist = function
+let rec file_lines file =
+  try
+    let line = input_line file in
+    line :: file_lines file
+  with _ -> []
+
+let charlist_of_str str =
+  let rec aux i = try String.get str i :: aux (i + 1) with _ -> [] in
+  aux 0
+
+let rec charlist_of_lines = function
+  | []     -> []
+  | l :: t -> charlist_of_str l @ charlist_of_lines t
+
+let open_xml filename =
+  charlist_of_lines (file_lines (open_in filename))
+
+let rec str_of_charlist = function
   | []     -> ""
-  | h :: t -> String.make 1 h ^ str_of_clist t
+  | h :: t -> String.make 1 h ^ str_of_charlist t
 
-(* : tagname ... > *)
-let rec get_tagname clist =
+let parse_until stop clist =
   let rec aux acc = function
-    | ' ' :: t as l -> (str_of_clist (List.rev acc), l)
-    | '>' :: t as l -> (str_of_clist (List.rev acc), l)
-    | c :: t        -> aux (c :: acc) t
-    | []            -> failwith "error"
-  in
-  aux [] clist
+    | c :: _ as rest when List.mem c stop -> 
+      str_of_charlist (List.rev acc), rest
+    | any :: t -> aux (any::acc) t
+    | [] -> str_of_charlist (List.rev acc), []
+  in aux [] clist
 
-open Printf
-
-let rec get_key clist =
-  let () = printf "get_key input: %s\n" (str_of_clist clist) in
+(* Same but does not include the stop char in rest. *)
+let parse_until_bis stop clist =
   let rec aux acc = function
-    | '=' :: t -> (str_of_clist (List.rev acc), t)
-    | c :: t   -> aux (c :: acc) t
-    | []       -> failwith "key"
-  in
-  aux [] clist
+    | c :: t when List.mem c stop -> 
+      str_of_charlist (List.rev acc), t
+    | any :: t -> aux (any::acc) t
+    | [] -> str_of_charlist (List.rev acc), []
+  in aux [] clist
 
-let rec get_value clist =
-  let () = printf "get_value input: %s\n" (str_of_clist clist) in
-  let rec aux acc = function
-    | ' ' :: t as l -> (str_of_clist (List.rev acc), l)
-    | '>' :: t as l -> (str_of_clist (List.rev acc), l)
-    | c :: t        -> aux (c :: acc) t
-    | []            -> failwith "value"
-  in
-  aux [] clist
+let parse_tagname clist = parse_until_bis [' '; '>'] clist
 
-let get_attributes clist =
-  let rec aux attr = function
-    | '>' :: t    -> (attr, t)
-    | ' ' :: t    -> aux attr t
+let parse_key clist = parse_until ['='] clist
+
+let parse_value clist = parse_until [' '; '>'] clist
+
+let parse_attributes clist =
+  let rec aux res = function
+    | '>' :: t    -> (res, t)
+    | ' ' :: t    -> aux res t
     | c :: t as l ->
-        let key, rest   = get_key l in
-        let value, rest = get_value rest in
-        aux (StrMap.add key value attr) rest
-    | [] -> failwith "attr"
+        let key, rest   = parse_key l in
+        let value, rest = parse_value rest in
+        aux (StrMap.add key value res) rest
+    | [] -> failwith "parse_attributes"
   in
   aux StrMap.empty clist
+
+let handle_attributes = function
+  | '>' :: t -> (None, t)
+  | '<' :: _ as rest -> (None, rest)
+  | _ :: _ as l -> 
+    let attributes, rest = parse_attributes l in (Some attributes, rest)
+  | [] -> (None, [])
 
 (* : <tagname ... > *)
 let rec parse_opening_tag level = function
   | '<' :: t ->
-      let tagname, rest = get_tagname t in
-      let () = printf "parse op tag rest: %s\n" (str_of_clist rest) in
-      let attributes, rest =
-        match rest with
-        | '>' :: t -> (None, t)
-        | '<' :: t -> (None, rest)
-        | _ :: t   ->
-            let map, r = get_attributes rest in (Some map, r)
-        | [] -> (None, [])
-      in
+      let tagname, rest = parse_tagname t in
+      let attributes, rest = handle_attributes rest in
       (OpeningTag { tagname; attributes; content = None; level }, rest)
-  | _ -> failwith "opening"
+  | _ -> failwith "parse_opening_tag"
 
 (* </tagname> *)
 let rec parse_closing_tag level = function
   | '<' :: '/' :: t ->
-      let tagname, rest = get_tagname t in
-      let () = printf "parse clo rest = %s\n\n" (str_of_clist rest) in
-      let rest = 
-      ( match rest with 
-          | '>'::t -> t
-          | _ -> rest
-      ) in
+      let tagname, rest = parse_tagname t in
       (ClosingTag { tagname; level }, rest)
-  | _ -> failwith "opening"
-
-open Printf
+  | _ -> failwith "parse_closing_tag"
 
 let str_of_char c = String.make 1 c
 
-let rec parse_content = function
-  | '<' :: _ as l -> "", l
-  | c :: t -> 
-    let res, rest = parse_content t in 
-    (str_of_char c) ^ res, rest
-  | [] -> failwith "parse content"
+let parse_content clist = parse_until ['<'] clist
 
 let some = function
   | Some x -> x
@@ -124,35 +102,19 @@ let openingtag = function
     | _ -> failwith ""
 
 (* Charlist of all document *)
-let rec to_xml_tag_list clist = 
+let rec xmltags_of_charlist clist = 
   let rec aux level = function
     | '<' :: '/' :: t as l ->
         let tag, rest = parse_closing_tag (level - 1) l in
         tag :: aux (level - 1) rest
     | '<' :: t as l ->
-        let () = printf "Given list: %s\n" (str_of_clist l) in
         let tag, rest = parse_opening_tag level l in
-        let () = printf "Rest after parsing op tag: %s\n" (str_of_clist rest) in
         let content, rest = parse_content rest in
-        let () = printf "\nContent: %s\n" (content) in
-        let () = printf "Rest: %s\n" (str_of_clist rest) in
         let attr, tagn, lev, _ =  openingtag tag in
         let tag = OpeningTag {attributes=attr; level=lev; tagname=tagn; content=Some content;}
         in
         tag :: aux (level + 1) rest
     | [] -> []
-    | l  -> 
-      let () = printf "\nlast case: %s\n\n" (str_of_clist l) in
-      failwith "main"
+    | l  -> failwith "xmltags_of_charlist"
   in 
   aux 0 clist
-
-(*
-let example () = 
-  let clist = open_xml "sample2.xml" in
-  let tag = parse_opening_tag clist in
-  let attr = match tag with OpeningTag record -> record.attributes | _ -> failwith ""
-  in
-  let map = match attr with Some x -> x | _ -> failwith "" in
-  let () = StrMap.iter (fun k v -> Printf.printf "%s, %s\n" k v) map in ()
-  *)
